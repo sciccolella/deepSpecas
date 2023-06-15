@@ -1,7 +1,7 @@
 # Build env
 
 ```bash
-mamba create -n DSpoly2 -c bioconda -c conda-forge -c pytorch -c nvidia pysam snakemake matplotlib rich pytorch torchvision  torchaudio pytorch-cuda=11.7 scikit-learn pandas seaborn opencv
+mamba create -n DSpoly2 -c bioconda -c conda-forge -c pytorch -c nvidia pysam snakemake matplotlib rich pytorch torchvision  torchaudio pytorch-cuda=11.8 scikit-learn pandas seaborn opencv
 conda activate DSpoly2
 CC="cc -mavx2" pip install -U --force-reinstall pillow-simd
 ```
