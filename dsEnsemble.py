@@ -29,6 +29,7 @@ import torch.nn.functional as F
 # import pandas as pd
 from os.path import join as pjoin
 from os import makedirs
+import pysam
 
 # from torch import topk
 # import cv2
@@ -37,8 +38,11 @@ from os import makedirs
 
 # from torchvision.io import read_image
 
-import jitimg
+from functools import partial
+
 import deepSpecas
+from plot2s import Event2sample, Event2sampleReads, Event2sampleComb, parse_region
+
 
 import time
 
@@ -58,72 +62,77 @@ def predict(
     # https://pytorch.org/functorch/stable/notebooks/ensembling.html
 
     nets = [m.to(device) for m in models]
-
-    _resize = {
-        "colmplp": (500, 125),
-        "colmplp2s": (500, 125),
-        "squishstack": (500, 400),
-        "squish4d": (400, 200),
-    }
+    MAXREADS=5_000
 
     _event_ix = 0
-    print("ix,reg,bam1,bam2", ",".join([f"{p}" for p in plots]), "sumall", sep=",")
-    for line in open(args.csv):
-        _event_ix += 1
-        line = line.strip()
-        region, bam1, bam2 = line.split(",")
-        print(_event_ix, region, bam1, bam2, sep=",", end=",")
-        outs = []
-        for plt_ix, _ in enumerate(plots):
-            e = jitimg.get_event2s(
-                region, bam1, bam2, plot=plots[plt_ix], mincov=mincov
-            )
-            _start = time.time()
-            img = e.plot(
-                zoom=20,
-                type=plots[plt_ix],
-                mode="pil",
-                prefix="",
-                crossfeeds=[(0, 0)],
-                mincov=mincov,
-            )[0]
-            _end = time.time()
-            print(f"{plots[plt_ix]}: {_end-_start:.4f}", file=sys.stderr)
+    print("ix,region,pred", sep=",")
+    with torch.no_grad():
+        for line in open(csvpath):
+            _event_ix += 1
+            line = line.strip()
+            region, bam1path, bam2path = line.split(",")
+            print(_event_ix, region, sep=",", end=",")
+            outs = []
 
-            ts = transformers[plt_ix](img)
-            ts = ts.unsqueeze(0)
-            ts = ts.to(device)
+            for plt_ix, _ in enumerate(plots):
 
-            # net = net.to(device)
-            _out = nets[plt_ix](ts)
+                _cls = Event2sample
+                if plots[plt_ix] in ["squishstack", "squish4d"]:
+                    _cls = partial(Event2sampleReads, max_reads=MAXREADS)
+                elif plots[plt_ix] in ["comb", "comb4d"]:
+                    _cls = partial(Event2sampleComb, max_reads=MAXREADS)
 
-            probs = F.softmax(_out, dim=1)
+                event = _cls(parse_region(region), pysam.AlignmentFile(bam1path), pysam.AlignmentFile(bam2path), max_reads=MAXREADS)
+                _p = event.plot(zoom=args.zoom, type=plots[plt_ix], mode="pil", prefix='', crossfeeds=[[0,0]], mincov=mincov, ensure_JPGE_size=False)
+                assert(len(_p) == 1)
+                img = _p[0]
+                # print(f"{plots[plt_ix]}: {_end-_start:.4f}", file=sys.stderr)
+
+                ts = transformers[plt_ix](img)
+                ts = ts.unsqueeze(0)
+                ts = ts.to(device)
+
+                nets[plt_ix].eval()
+                _out = nets[plt_ix](ts)
+
+                probs = F.softmax(_out, dim=1)
+                conf, pred = torch.max(probs, 1)
+                conf = conf.item()
+                # print(plots[ix], conf, classes[pred.cpu().numpy()[0]])
+                # print(classes[pred.cpu().numpy()[0]] + f":{conf:.4f}", end=",")
+
+                # if imgout != "":
+                #     if plots[plt_ix] in _resize:
+                #         img = img.resize(_resize[plots[plt_ix]])
+
+                #     img.save(pjoin(imgout, f"{_event_ix}.{plots[plt_ix]}.jpeg"))
+
+                outs.append(_out)
+
+            # ensemble
+            allout = sum(outs)
+            probs = F.softmax(allout, dim=1)
             conf, pred = torch.max(probs, 1)
-            conf = conf.item()
-            # print(plots[ix], conf, classes[pred.cpu().numpy()[0]])
-            print(classes[pred.cpu().numpy()[0]] + f":{conf:.4f}", end=",")
-
-            if imgout != "":
-                if plots[plt_ix] in _resize:
-                    img = img.resize(_resize[plots[plt_ix]])
-
-                img.save(pjoin(imgout, f"{_event_ix}.{plots[plt_ix]}.jpeg"))
-
-            outs.append(_out)
-
-        # ensemble
-        allout = sum(outs)
-        probs = F.softmax(allout, dim=1)
-        conf, pred = torch.max(probs, 1)
-        conf = conf.item()
-        # print("sumall", conf, classes[pred.cpu().numpy()[0]], sep=",")
-        print(classes[pred.cpu().numpy()[0]] + f":{conf:.4f}", flush=True)
+            # conf = conf.item()
+            # print("sumall", conf, classes[pred.cpu().numpy()[0]], sep=",")
+            print(classes[pred.cpu().numpy()[0]], flush=True)
 
 
 def main(args):
-    print("#", " ".join(sys.argv))
-    classes = sorted(args.classes)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # print("#", " ".join(sys.argv))
+    classes = ["A3", "A5", "CE", "NN", "RI", "SE"]
+    if args.cse:
+        classes.append("CSE")
+        classes.remove("CE")
+        classes.remove("SE")
+    if args.a:
+        classes.append("A")
+        classes.remove("A3")
+        classes.remove("A5")
+    classes = sorted(classes)
+
+    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = "cuda:0"
     print(f"[:deepSpecas:] Using device: {device}", file=sys.stderr)
 
     plots = []
@@ -136,7 +145,7 @@ def main(args):
         plots.append("pyplot2s")
         models.append(_m)
         transformers.append(deepSpecas._build_transformer("pyplot2s", 3))
-        # models["pyplot2s"] = [_m, deepSpecas._build_transformer("pyplot2s", 3)]
+
     if _path := args.colmplp2s:
         _m = deepSpecas._build_model("rs50", 4)
         _m.fc = nn.Linear(2048, len(classes))
@@ -144,7 +153,7 @@ def main(args):
         plots.append("colmplp2s")
         models.append(_m)
         transformers.append(deepSpecas._build_transformer("colmplp2s", 4))
-        # models["colmplp2s"] = [_m, deepSpecas._build_transformer("colmplp2s", 4)]
+
     if _path := args.squishstack:
         _m = deepSpecas._build_model("rs50", 3)
         _m.fc = nn.Linear(2048, len(classes))
@@ -152,7 +161,7 @@ def main(args):
         plots.append("squishstack")
         models.append(_m)
         transformers.append(deepSpecas._build_transformer("squishstack", 3))
-        # models["squishstack"] = [_m, deepSpecas._build_transformer("squishstack", 3)]
+
     if _path := args.squish4d:
         _m = deepSpecas._build_model("rs50", 4)
         _m.fc = nn.Linear(2048, len(classes))
@@ -160,7 +169,23 @@ def main(args):
         plots.append("squish4d")
         models.append(_m)
         transformers.append(deepSpecas._build_transformer("squish4d", 4))
-        # models["squish4d"] = [_m, deepSpecas._build_transformer("squish4d", 4)]
+
+    if _path := args.comb:
+        _m = deepSpecas._build_model("rs50", 3)
+        _m.fc = nn.Linear(2048, len(classes))
+        _m.load_state_dict(torch.load(_path, map_location=device))
+        plots.append("comb")
+        models.append(_m)
+        transformers.append(deepSpecas._build_transformer("comb", 3))
+
+    if _path := args.comb4d:
+        _m = deepSpecas._build_model("rs50", 4)
+        _m.fc = nn.Linear(2048, len(classes))
+        _m.load_state_dict(torch.load(_path, map_location=device))
+        plots.append("comb4d")
+        models.append(_m)
+        transformers.append(deepSpecas._build_transformer("comb4d", 4))
+
 
     predict(
         args.csv, models, plots, transformers, args.mincov, classes, imgout=args.imgout
@@ -174,7 +199,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict using ensemble fo nets")
 
     parser.add_argument(
-        "--zoom", type=int, nargs="*", default=[-1], help="zoom [default=-1]"
+        "--zoom", type=int, help="zoom"
     )
     parser.add_argument(
         "--version",
@@ -240,12 +265,33 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--classes",
-        nargs="+",
+        "--comb",
         type=str,
         required=False,
         default=None,
-        help="Trained model on squish4d",
+        help="Trained model on comb",
+    )
+
+    parser.add_argument(
+        "--comb4d",
+        type=str,
+        required=False,
+        default=None,
+        help="Trained model on comb4d",
+    )
+
+    parser.add_argument(
+        "--a",
+        action="store_true",
+        default=False,
+        help="Collapse A3 and A5 into A. [DEFAULT: False]",
+    )
+
+    parser.add_argument(
+        "--cse",
+        action="store_true",
+        default=False,
+        help="Collapse CE and SE into CSE. [DEFAULT: False]",
     )
 
     args = parser.parse_args()
