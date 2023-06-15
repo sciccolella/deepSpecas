@@ -544,44 +544,12 @@ class Event2sampleReads(EventAbstract):
         return (_c1, _s1, _c2, _s2)
 
 
-# def __pyplot_debug(data, out):
-
-#     for _ix, d in enumerate(data):
-#         plt.subplot(len(data), 1, _ix + 1)
-#         x = range(len(d[0]))
-#         plt.bar(x, d[1], color="blue", width=1.0)
-#         plt.bar(x, d[0], bottom=d[1], color="red", width=1.0)
-#     plt.savefig(out)
-#     plt.close()
-
 
 def to_ranges(iterable: Iterable) -> Iterable:
     iterable = sorted(set(iterable))
     for key, group in itertools.groupby(enumerate(iterable), lambda t: t[1] - t[0]):
         group = list(group)
         yield group[0][1], group[-1][1]
-
-
-# import uuid
-# import random
-
-# random.seed(21)
-
-# def crossfeed_bams(bam1: pysam.AlignmentFile, bam2: pysam.AlignmentFile,
-#                    perc: float) -> str:
-#     out = f"/tmp/{uuid.uuid4().hex}.bam"
-#     obam = pysam.AlignmentFile(out, "wb", template=bam1)
-#     for read in bam1.fetch():
-#         obam.write(read)
-#     for read in bam2.fetch():
-#         if random.random() < perc:
-#             read.query_name = read.query_name + "_crossfeed"
-#             obam.write(read)
-#     obam.close()
-#     print(out)
-#     pysam.sort("-o", f"{out}.sorted.bam", out)
-#     pysam.index(f"{out}.sorted.bam")
-#     return f"{out}.sorted.bam"
 
 
 def get_coords_from_bam(bam: pysam.AlignmentFile, region: tuple, mincov: int = 0):
