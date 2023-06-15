@@ -82,7 +82,7 @@ def predict(
                 elif plots[plt_ix] in ["comb", "comb4d"]:
                     _cls = partial(Event2sampleComb, max_reads=MAXREADS)
 
-                event = _cls(parse_region(region), pysam.AlignmentFile(bam1path), pysam.AlignmentFile(bam2path), max_reads=MAXREADS)
+                event = _cls(parse_region(region), pysam.AlignmentFile(bam1path), pysam.AlignmentFile(bam2path))
                 _p = event.plot(zoom=args.zoom, type=plots[plt_ix], mode="pil", prefix='', crossfeeds=[[0,0]], mincov=mincov, ensure_JPGE_size=False)
                 assert(len(_p) == 1)
                 img = _p[0]
