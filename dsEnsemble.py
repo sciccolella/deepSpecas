@@ -30,6 +30,8 @@ import torch.nn.functional as F
 from os.path import join as pjoin
 from os import makedirs
 import pysam
+from torch.utils.data import Dataset
+from PIL import Image
 
 # from torch import topk
 # import cv2
@@ -42,9 +44,132 @@ from functools import partial
 
 import deepSpecas
 from plot2s import Event2sample, Event2sampleReads, Event2sampleComb, parse_region
-
+import pandas as pd
 
 import time
+
+MAXREADS = 5_000
+PLT_CLS = {
+    "pyplot2s": Event2sample,
+    "colmplp2s": Event2sample,
+    "squishstack": partial(Event2sampleReads, max_reads=MAXREADS),
+    "squish4d": partial(Event2sampleReads, max_reads=MAXREADS),
+    "comb": partial(Event2sampleComb, max_reads=MAXREADS),
+    "comb4d": partial(Event2sampleComb, max_reads=MAXREADS),
+}
+
+
+class EventDataset(Dataset):
+    def __init__(
+        self,
+        df,
+        plot: str,
+        wd: str = "",
+        transform=None,
+        target_transform=None,
+    ):
+        self.imgs = df[df["plot"] == plot]
+        self.wd = wd
+        self.plot = plot
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return len(self.imgs)
+
+    def __getitem__(self, idx):
+        img_path = self.imgs.iloc[idx, 0]
+        if self.plot in ["pyplot2s", "squishstack", "comb"]:
+            image = Image.open(pjoin(self.wd, img_path)).convert("RGB")
+        elif self.plot in ["colmplp2s", "squish4d", "comb4d"]:
+            image = Image.open(pjoin(self.wd, img_path)).convert("CMYK")
+        else:
+            raise ValueError
+        if self.transform:
+            image = self.transform(image)
+        if self.target_transform:
+            label = self.target_transform(label)
+        return image
+
+
+def predict_from_imgs(
+    csvpath: str,
+    wd: str,
+    models: list,
+    plots: list,
+    transformers: list,
+    classes: list[str],
+):
+    device = "cuda:0"
+    # nets = [m.to(device) for m in models]
+
+    df = pd.read_csv(csvpath, names=["path", "plot"], header=None)
+    _plot = "comb4d"
+    _plot_ix = 5
+
+    outs = [[] for _ in plots]
+
+    for _plot_ix, _ in enumerate(plots):
+        dataset = EventDataset(df, plots[_plot_ix], "", transform=transformers[_plot_ix])
+        dataloader = torch.utils.data.DataLoader(
+            dataset, batch_size=1, shuffle=False, num_workers=2
+        )
+
+        with torch.no_grad():
+            _net = models[_plot_ix].to(device)
+            _net.eval()
+            for inputs in dataloader:
+                inputs = inputs.to(device)
+
+                outputs = _net(inputs)
+                outs[_plot_ix].append(outputs)
+    
+    
+    touts = [torch.cat(o) for o in outs]
+    touts = sum(touts)
+
+    print(touts.shape)
+    for i in range(touts.shape[0]):
+        # print(touts[i], F.softmax(touts[i], dim=0))
+        probs = F.softmax(touts[i], dim=0)
+        conf, pred = torch.max(probs, 0)
+        # print(pred)
+        # conf = conf.item()
+        # print("sumall", conf, classes[pred.cpu().numpy()[0]], sep=",")
+        print(i, classes[pred.cpu().numpy()], flush=True)
+
+
+def plot_images(
+    csvpath: str, plots: list[str], plot_folder: str, zoom: int, mincov: int
+):
+    print(csvpath, plots)
+    makedirs(plot_folder, exist_ok=True)
+
+    outcsv = open(pjoin(plot_folder, "events.csv"), "w+")
+    _event_ix = 0
+    for line in open(csvpath):
+        _event_ix += 1
+        for _plot in plots:
+            line = line.strip()
+            region, bam1path, bam2path = line.split(",")
+            prefix = f"{_plot}.{_event_ix}.{region.replace(':','_')}"
+
+            event = PLT_CLS[_plot](
+                parse_region(region),
+                pysam.AlignmentFile(bam1path),
+                pysam.AlignmentFile(bam2path),
+            )
+            out_files = event.plot(
+                zoom,
+                type=_plot,
+                mode="savefig",
+                prefix=pjoin(plot_folder, prefix),
+                crossfeeds=[[0, 0]],
+                ensure_JPGE_size=True,
+            )
+            outcsv.write(f"{out_files[0]},{_plot}\n")
+    outcsv.close()
+
 
 def predict(
     csvpath: str,
@@ -62,7 +187,6 @@ def predict(
     # https://pytorch.org/functorch/stable/notebooks/ensembling.html
 
     nets = [m.to(device) for m in models]
-    MAXREADS=5_000
 
     _event_ix = 0
     print("ix,region,pred", sep=",")
@@ -75,16 +199,27 @@ def predict(
             outs = []
 
             for plt_ix, _ in enumerate(plots):
-
                 _cls = Event2sample
                 if plots[plt_ix] in ["squishstack", "squish4d"]:
                     _cls = partial(Event2sampleReads, max_reads=MAXREADS)
                 elif plots[plt_ix] in ["comb", "comb4d"]:
                     _cls = partial(Event2sampleComb, max_reads=MAXREADS)
 
-                event = _cls(parse_region(region), pysam.AlignmentFile(bam1path), pysam.AlignmentFile(bam2path))
-                _p = event.plot(zoom=args.zoom, type=plots[plt_ix], mode="pil", prefix='', crossfeeds=[[0,0]], mincov=mincov, ensure_JPGE_size=False)
-                assert(len(_p) == 1)
+                event = _cls(
+                    parse_region(region),
+                    pysam.AlignmentFile(bam1path),
+                    pysam.AlignmentFile(bam2path),
+                )
+                _p = event.plot(
+                    zoom=args.zoom,
+                    type=plots[plt_ix],
+                    mode="pil",
+                    prefix="",
+                    crossfeeds=[[0, 0]],
+                    mincov=mincov,
+                    ensure_JPGE_size=False,
+                )
+                assert len(_p) == 1
                 img = _p[0]
                 # print(f"{plots[plt_ix]}: {_end-_start:.4f}", file=sys.stderr)
 
@@ -102,8 +237,8 @@ def predict(
                 # print(classes[pred.cpu().numpy()[0]] + f":{conf:.4f}", end=",")
 
                 # if imgout != "":
-                #     if plots[plt_ix] in _resize:
-                #         img = img.resize(_resize[plots[plt_ix]])
+                #     # if plots[plt_ix] in _resize:
+                #     #     img = img.resize(_resize[plots[plt_ix]])
 
                 #     img.save(pjoin(imgout, f"{_event_ix}.{plots[plt_ix]}.jpeg"))
 
@@ -186,21 +321,34 @@ def main(args):
         models.append(_m)
         transformers.append(deepSpecas._build_transformer("comb4d", 4))
 
-
-    predict(
-        args.csv, models, plots, transformers, args.mincov, classes, imgout=args.imgout
-    )
+    if args.fromimages:
+        # plot_images(args.csv, plots, "debug/esm/plotfirst", args.zoom, args.mincov)
+        predict_from_imgs(
+            args.csv,
+            "",
+            models,
+            plots,
+            transformers,
+            classes,
+        )
+    else:
+        predict(
+            args.csv,
+            models,
+            plots,
+            transformers,
+            args.mincov,
+            classes,
+            imgout=args.imgout,
+        )
 
 
 if __name__ == "__main__":
-
     import argparse
 
     parser = argparse.ArgumentParser(description="Predict using ensemble fo nets")
 
-    parser.add_argument(
-        "--zoom", type=int, help="zoom"
-    )
+    parser.add_argument("--zoom", type=int, help="zoom")
     parser.add_argument(
         "--version",
         type=int,
@@ -292,6 +440,14 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Collapse CE and SE into CSE. [DEFAULT: False]",
+    )
+
+    parser.add_argument(
+        "-I",
+        "--fromimages",
+        action="store_true",
+        default=False,
+        help="Predict from images instead of plotting images JIT [DEFAULT: False]",
     )
 
     args = parser.parse_args()
