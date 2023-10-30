@@ -153,7 +153,7 @@ class Event2sample(EventAbstract):
         resize: bool = False,
         **_,
     ) -> Union[str, PIL.Image.Image]:
-        h = max(c1.max(), c2.max(), s1.max(), s2.max())
+        h = max(c1.max(), c2.max(), s1.max(), s2.max(), 1)
         c1mat = _getmat(c1, h)
         s1mat = _getmat(s1, h)
         c2mat = _getmat(c2, h)
@@ -193,7 +193,7 @@ class Event2sample(EventAbstract):
         ensure_JPGE_size: bool = True,
         **_,
     ) -> Union[str, PIL.Image.Image]:
-        h = max(c1.max(), c2.max(), s1.max(), s2.max())
+        h = max(c1.max(), c2.max(), s1.max(), s2.max(), 1)
         c1mat = _getmat(c1, h)
         s1mat = _getmat(s1, h)
         c2mat = _getmat(c2, h)
@@ -568,7 +568,7 @@ class Event2sampleComb(Event2sampleReads):
         **_,
     ) -> Union[str, PIL.Image.Image]:
         mc1, ms1, mc2, ms2 = [np.count_nonzero(x, axis=0) for x in [c1, s1, c2, s2]]
-        h = max(mc1.max(), mc2.max(), ms1.max(), ms2.max())
+        h = max(mc1.max(), mc2.max(), ms1.max(), ms2.max(), 1)
         mc1mat = _getmat(mc1, h)
         ms1mat = _getmat(ms1, h)
         mc2mat = _getmat(mc2, h)

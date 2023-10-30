@@ -864,7 +864,7 @@ if __name__ == "__main__":
             "-m",
             "--model",
             type=str,
-            choices=["rs50", "TODO"],
+            choices=["rs50"],
             default="rs50",
             help="Network model",
         )
