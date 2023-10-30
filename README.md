@@ -9,10 +9,7 @@ CC="cc -mavx2" pip install -U --force-reinstall pillow-simd
 
 # Run `deepSpecas` using trained nets
 
-Alongside the tool we also release the trained networks that we used in the manuscript, therefore allowing the use to use `deepSpecas` directly without the need of retrain all the different implementations. It is first necessary to 
-```bash
-tar -xzf nets.tar.gz
-```
+Alongside the tool we also release the trained networks that we used in the manuscript, therefore allowing the use to use `deepSpecas` directly without the need of retrain all the different implementations.
 
 ## Ensemble
 The help of the tool:
