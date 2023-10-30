@@ -1,7 +1,4 @@
-"""
-python poly/esmPredict.py --csv  /home/simone/data/benchmark/2samples/1/predict.merged.csv --pyplot2s /home/simone/polyDS/net/mincov3/pyplot2s/v1/train/zoom20/rs50.cCSE.e10.full.nocf_.sf0.5.pth --colmplp2s /home/simone/polyDS/net/mincov3/colmplp2s/v1/train/zoom20/rs50.cCSE.e10.full.nocf_.sf0.5.pth --squishstack /home/simone/polyDS/net/mincov3/squishstack/v1/train/zoom20/rs50.cCSE.e10.full.nocf0.2-0.2.sf0.5.pth --squish4d /home/simone/polyDS/net/mincov3/squish4d/v1/train/zoom20/rs50.cCSE.e10.full.nocf0.2-0.2.sf0.5.pth --classes A3 A5 CSE RI NN
-"""
-
+from collections import defaultdict
 import torch
 
 # import torchvision.transforms as transforms
@@ -58,7 +55,6 @@ PLT_CLS = {
     "comb4d": partial(Event2sampleComb, max_reads=MAXREADS),
 }
 
-
 class EventDataset(Dataset):
     def __init__(
         self,
@@ -92,85 +88,6 @@ class EventDataset(Dataset):
         return image
 
 
-def predict_from_imgs(
-    csvpath: str,
-    wd: str,
-    models: list,
-    plots: list,
-    transformers: list,
-    classes: list[str],
-):
-    device = "cuda:0"
-    # nets = [m.to(device) for m in models]
-
-    df = pd.read_csv(csvpath, names=["path", "plot"], header=None)
-    _plot = "comb4d"
-    _plot_ix = 5
-
-    outs = [[] for _ in plots]
-
-    for _plot_ix, _ in enumerate(plots):
-        dataset = EventDataset(df, plots[_plot_ix], "", transform=transformers[_plot_ix])
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=1, shuffle=False, num_workers=2
-        )
-
-        with torch.no_grad():
-            _net = models[_plot_ix].to(device)
-            _net.eval()
-            for inputs in dataloader:
-                inputs = inputs.to(device)
-
-                outputs = _net(inputs)
-                outs[_plot_ix].append(outputs)
-    
-    
-    touts = [torch.cat(o) for o in outs]
-    touts = sum(touts)
-
-    print(touts.shape)
-    for i in range(touts.shape[0]):
-        # print(touts[i], F.softmax(touts[i], dim=0))
-        probs = F.softmax(touts[i], dim=0)
-        conf, pred = torch.max(probs, 0)
-        # print(pred)
-        # conf = conf.item()
-        # print("sumall", conf, classes[pred.cpu().numpy()[0]], sep=",")
-        print(i, classes[pred.cpu().numpy()], flush=True)
-
-
-def plot_images(
-    csvpath: str, plots: list[str], plot_folder: str, zoom: int, mincov: int
-):
-    print(csvpath, plots)
-    makedirs(plot_folder, exist_ok=True)
-
-    outcsv = open(pjoin(plot_folder, "events.csv"), "w+")
-    _event_ix = 0
-    for line in open(csvpath):
-        _event_ix += 1
-        for _plot in plots:
-            line = line.strip()
-            region, bam1path, bam2path = line.split(",")
-            prefix = f"{_plot}.{_event_ix}.{region.replace(':','_')}"
-
-            event = PLT_CLS[_plot](
-                parse_region(region),
-                pysam.AlignmentFile(bam1path),
-                pysam.AlignmentFile(bam2path),
-            )
-            out_files = event.plot(
-                zoom,
-                type=_plot,
-                mode="savefig",
-                prefix=pjoin(plot_folder, prefix),
-                crossfeeds=[[0, 0]],
-                ensure_JPGE_size=True,
-            )
-            outcsv.write(f"{out_files[0]},{_plot}\n")
-    outcsv.close()
-
-
 def predict(
     csvpath: str,
     models: list,
@@ -186,7 +103,7 @@ def predict(
     # TODO: this can be optimized using batches and vmap
     # https://pytorch.org/functorch/stable/notebooks/ensembling.html
 
-    nets = [m.to(device) for m in models]
+    # nets = [m.to(device) for m in models]
 
     _event_ix = 0
     print("ix,region,pred", sep=",")
@@ -198,7 +115,7 @@ def predict(
             print(_event_ix, region, sep=",", end=",")
             outs = []
 
-            for plt_ix, _ in enumerate(plots):
+            for plt_ix, _plt_name in enumerate(plots):
                 _cls = Event2sample
                 if plots[plt_ix] in ["squishstack", "squish4d"]:
                     _cls = partial(Event2sampleReads, max_reads=MAXREADS)
@@ -210,39 +127,42 @@ def predict(
                     pysam.AlignmentFile(bam1path),
                     pysam.AlignmentFile(bam2path),
                 )
-                _p = event.plot(
-                    zoom=args.zoom,
-                    type=plots[plt_ix],
-                    mode="pil",
-                    prefix="",
-                    crossfeeds=[[0, 0]],
-                    mincov=mincov,
-                    ensure_JPGE_size=False,
-                )
-                assert len(_p) == 1
-                img = _p[0]
-                # print(f"{plots[plt_ix]}: {_end-_start:.4f}", file=sys.stderr)
+                for _zoom in args.zoom:
+                    _p = event.plot(
+                        zoom=_zoom,
+                        type=_plt_name,
+                        mode="pil",
+                        prefix="",
+                        crossfeeds=[[0, 0]],
+                        mincov=mincov,
+                        ensure_JPGE_size=False,
+                    )
+                    assert len(_p) == 1
+                    img = _p[0]
+                    # print(f"{plots[plt_ix]}: {_end-_start:.4f}", file=sys.stderr)
 
-                ts = transformers[plt_ix](img)
-                ts = ts.unsqueeze(0)
-                ts = ts.to(device)
+                    ts = transformers[plt_ix](img)
+                    ts = ts.unsqueeze(0)
+                    ts = ts.to(device)
 
-                nets[plt_ix].eval()
-                _out = nets[plt_ix](ts)
+                    _net = models[_plt_name][_zoom].to(device)
 
-                probs = F.softmax(_out, dim=1)
-                conf, pred = torch.max(probs, 1)
-                conf = conf.item()
-                # print(plots[ix], conf, classes[pred.cpu().numpy()[0]])
-                # print(classes[pred.cpu().numpy()[0]] + f":{conf:.4f}", end=",")
+                    _net.eval()
+                    _out = _net(ts)
 
-                # if imgout != "":
-                #     # if plots[plt_ix] in _resize:
-                #     #     img = img.resize(_resize[plots[plt_ix]])
+                    probs = F.softmax(_out, dim=1)
+                    conf, pred = torch.max(probs, 1)
+                    conf = conf.item()
+                    # print(plots[ix], conf, classes[pred.cpu().numpy()[0]])
+                    # print(classes[pred.cpu().numpy()[0]] + f":{conf:.4f}", end=",")
 
-                #     img.save(pjoin(imgout, f"{_event_ix}.{plots[plt_ix]}.jpeg"))
+                    # if imgout != "":
+                    #     # if plots[plt_ix] in _resize:
+                    #     #     img = img.resize(_resize[plots[plt_ix]])
 
-                outs.append(_out)
+                    #     img.save(pjoin(imgout, f"{_event_ix}.{plots[plt_ix]}.jpeg"))
+
+                    outs.append(_out)
 
             # ensemble
             allout = sum(outs)
@@ -271,76 +191,79 @@ def main(args):
     print(f"[:deepSpecas:] Using device: {device}", file=sys.stderr)
 
     plots = []
-    models = []
+    models = defaultdict(dict)
     transformers = []
     if _path := args.pyplot2s:
-        _m = deepSpecas._build_model("rs50", 3)
-        _m.fc = nn.Linear(2048, len(classes))
-        _m.load_state_dict(torch.load(_path, map_location=device))
+        # models["pyplot2s"] = {}
         plots.append("pyplot2s")
-        models.append(_m)
         transformers.append(deepSpecas._build_transformer("pyplot2s", 3))
+        for _zoom in args.zoom:
+            _m = deepSpecas._build_model("rs50", 3)
+            _m.fc = nn.Linear(2048, len(classes))
+            _m.load_state_dict(torch.load(_path.replace("{Z}", f"{_zoom}"), map_location=device))
+            # models.append(_m)
+            models["pyplot2s"][_zoom] = _m
 
     if _path := args.colmplp2s:
-        _m = deepSpecas._build_model("rs50", 4)
-        _m.fc = nn.Linear(2048, len(classes))
-        _m.load_state_dict(torch.load(_path, map_location=device))
+        # models["colmplp2s"] = {}
         plots.append("colmplp2s")
-        models.append(_m)
         transformers.append(deepSpecas._build_transformer("colmplp2s", 4))
+        for _zoom in args.zoom:
+            _m = deepSpecas._build_model("rs50", 4)
+            _m.fc = nn.Linear(2048, len(classes))
+            _m.load_state_dict(torch.load(_path.replace("{Z}", f"{_zoom}"), map_location=device))
+            # models.append(_m)
+            models["colmplp2s"][_zoom] = _m
 
     if _path := args.squishstack:
-        _m = deepSpecas._build_model("rs50", 3)
-        _m.fc = nn.Linear(2048, len(classes))
-        _m.load_state_dict(torch.load(_path, map_location=device))
         plots.append("squishstack")
-        models.append(_m)
         transformers.append(deepSpecas._build_transformer("squishstack", 3))
+        for _zoom in args.zoom:
+            _m = deepSpecas._build_model("rs50", 3)
+            _m.fc = nn.Linear(2048, len(classes))
+            _m.load_state_dict(torch.load(_path.replace("{Z}", f"{_zoom}"), map_location=device))
+            # models.append(_m)
+            models["squishstack"][_zoom] = _m
 
     if _path := args.squish4d:
-        _m = deepSpecas._build_model("rs50", 4)
-        _m.fc = nn.Linear(2048, len(classes))
-        _m.load_state_dict(torch.load(_path, map_location=device))
         plots.append("squish4d")
-        models.append(_m)
         transformers.append(deepSpecas._build_transformer("squish4d", 4))
+        for _zoom in args.zoom:
+            _m = deepSpecas._build_model("rs50", 4)
+            _m.fc = nn.Linear(2048, len(classes))
+            _m.load_state_dict(torch.load(_path.replace("{Z}", f"{_zoom}"), map_location=device))
+            # models.append(_m)
+            models["squish4d"][_zoom] = _m
 
     if _path := args.comb:
-        _m = deepSpecas._build_model("rs50", 3)
-        _m.fc = nn.Linear(2048, len(classes))
-        _m.load_state_dict(torch.load(_path, map_location=device))
         plots.append("comb")
-        models.append(_m)
         transformers.append(deepSpecas._build_transformer("comb", 3))
+        for _zoom in args.zoom:
+            _m = deepSpecas._build_model("rs50", 3)
+            _m.fc = nn.Linear(2048, len(classes))
+            _m.load_state_dict(torch.load(_path.replace("{Z}", f"{_zoom}"), map_location=device))
+            # models.append(_m)
+            models["comb"][_zoom] = _m
 
     if _path := args.comb4d:
-        _m = deepSpecas._build_model("rs50", 4)
-        _m.fc = nn.Linear(2048, len(classes))
-        _m.load_state_dict(torch.load(_path, map_location=device))
         plots.append("comb4d")
-        models.append(_m)
         transformers.append(deepSpecas._build_transformer("comb4d", 4))
+        for _zoom in args.zoom:
+            _m = deepSpecas._build_model("rs50", 4)
+            _m.fc = nn.Linear(2048, len(classes))
+            _m.load_state_dict(torch.load(_path.replace("{Z}", f"{_zoom}"), map_location=device))
+            # models.append(_m)
+            models["comb4d"][_zoom] = _m
 
-    if args.fromimages:
-        # plot_images(args.csv, plots, "debug/esm/plotfirst", args.zoom, args.mincov)
-        predict_from_imgs(
-            args.csv,
-            "",
-            models,
-            plots,
-            transformers,
-            classes,
-        )
-    else:
-        predict(
-            args.csv,
-            models,
-            plots,
-            transformers,
-            args.mincov,
-            classes,
-            imgout=args.imgout,
-        )
+    predict(
+        args.csv,
+        models,
+        plots,
+        transformers,
+        args.mincov,
+        classes,
+        imgout=args.imgout,
+    )
 
 
 if __name__ == "__main__":
@@ -348,7 +271,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Predict using ensemble fo nets")
 
-    parser.add_argument("--zoom", type=int, help="zoom")
+    parser.add_argument("--zoom", nargs="+", type=int, help="zoom")
     parser.add_argument(
         "--version",
         type=int,
@@ -442,13 +365,13 @@ if __name__ == "__main__":
         help="Collapse CE and SE into CSE. [DEFAULT: False]",
     )
 
-    parser.add_argument(
-        "-I",
-        "--fromimages",
-        action="store_true",
-        default=False,
-        help="Predict from images instead of plotting images JIT [DEFAULT: False]",
-    )
+    # parser.add_argument(
+    #     "-I",
+    #     "--fromimages",
+    #     action="store_true",
+    #     default=False,
+    #     help="Predict from images instead of plotting images JIT [DEFAULT: False]",
+    # )
 
     args = parser.parse_args()
 

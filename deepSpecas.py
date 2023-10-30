@@ -4,12 +4,14 @@ from torchvision.models import resnet50, ResNet50_Weights
 import sys
 import torch.nn as nn
 from torch.utils.data import random_split as pytorch_randsplit
+from torch.utils.data import SubsetRandomSampler, ConcatDataset
 
 import numpy as np
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 import seaborn as sns
 from matplotlib import pyplot as plt
 from PIL import Image
+
 # Image.MAX_IMAGE_PIXELS = None
 import torch.nn.functional as F
 import copy
@@ -27,6 +29,8 @@ from functools import partial
 from plot2s import Event2sample, Event2sampleReads, Event2sampleComb, parse_region
 
 from os import makedirs
+import os
+from sklearn.model_selection import KFold
 
 RESIZE_SIZE = {
     "pyplot2s": (400, 1000),
@@ -36,6 +40,13 @@ RESIZE_SIZE = {
     "comb": (800, 1000),
     "comb4d": (400, 1000),
 }
+
+def disable_print(func):
+    def wrapper():
+        sys.stdout = open(os.devnull, 'w')
+        func()
+        sys.stdout = sys.__stdout__
+    return wrapper
 
 class EventDataset(Dataset):
     def __init__(
@@ -120,7 +131,7 @@ def _build_transformer(plot: str, n_channels: int, scale_resize: float = 1.0):
     return transforms.Compose(tlist)
 
 
-def _build_model(model:str, n_channels:int):
+def _build_model(model: str, n_channels: int):
     if model == "rs50":
         _m = resnet50(weights=ResNet50_Weights.DEFAULT)
         if n_channels == 3:
@@ -187,6 +198,36 @@ def _saveCAM(
     cv2.imwrite(out, res)
 
 
+def load_dataset_only(
+    folder,
+    plot: str,
+    n_channels: int,
+    collapse_cse: bool,
+    collapse_a: bool,
+    resizescale: bool = False,
+    wd: str = "",
+    sample_frac: int = 1,
+    filter_out: str = "_",
+):
+    transform = _build_transformer(plot, n_channels, resizescale)
+
+    if type(folder) == pd.DataFrame or folder.endswith(".csv"):
+        dataset = EventDataset(
+            folder,
+            plot=plot,
+            collapse_cse=collapse_cse,
+            collapse_a=collapse_a,
+            transform=transform,
+            wd=wd,
+            sample_frac=sample_frac,
+            filter_out=filter_out,
+        )
+
+        return dataset
+    else:
+        sys.exit(1)
+
+
 def load_data(
     folder,
     random_split: bool,
@@ -200,8 +241,8 @@ def load_data(
     wd: str = "",
     sample_frac: int = 1,
     filter_out: str = "_",
+    num_workers: int = 2,
 ):
-    
     transform = _build_transformer(plot, n_channels, resizescale)
 
     if type(folder) == pd.DataFrame or folder.endswith(".csv"):
@@ -229,21 +270,69 @@ def load_data(
         )
 
         train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=2
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
         )
 
         val_loader = torch.utils.data.DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=2
+            val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers
         )
 
         return (train_loader, val_loader), dataset.classes
 
     else:
         data_loader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, shuffle=shuffle, num_workers=2
+            dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers
         )
 
         return data_loader, dataset.classes
+
+
+def kfold_crossvalidation(
+    model,
+    datasets,
+    criterion,
+    optimizer,
+    classes,
+    num_epochs=5,
+    is_inception=False,
+    folds=5,
+):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(device)
+
+    model = model.to(device)
+
+    kfold = KFold(n_splits=folds, shuffle=True)
+    print("fold,precision,recall,fscore,time")
+    # dataset = ConcatDataset([datasets["train"], datasets["val"]])
+    dataset = datasets["train"]
+    _val_loader = torch.utils.data.DataLoader(datasets["val"], batch_size=8)
+
+    for _fold, (train_ids, test_ids) in enumerate(kfold.split(dataset)):
+        train_subsampler = SubsetRandomSampler(train_ids)
+        test_subsampler = SubsetRandomSampler(test_ids)
+
+        trainloader = torch.utils.data.DataLoader(
+            dataset, batch_size=8, sampler=train_subsampler
+        )
+        testloader = torch.utils.data.DataLoader(
+            dataset, batch_size=8, sampler=test_subsampler
+        )
+        _fold_loaders = {"train": trainloader, "val": testloader}
+        since = time.time()
+
+        sys.stdout = open(os.devnull, 'w')
+        kmodel, _ = train_model(
+            model, _fold_loaders, criterion, optimizer, 5, is_inception
+        )
+        time_elapsed = time.time() - since
+        x = validate(_val_loader, kmodel, classes)
+        sys.stdout = sys.__stdout__
+
+        print(_fold, *x, time_elapsed, sep=',')
 
 
 def train_model(
@@ -370,8 +459,27 @@ def validate(val_loader, model, classes=None, hm=None):
 
     if hm:
         cf_matrix = confusion_matrix(y_true, y_pred)
-        sns.heatmap(cf_matrix, annot=True, xticklabels=classes, yticklabels=classes)
+        print("precision,recall,fscore")
+        print(
+            *precision_recall_fscore_support(y_true, y_pred, average="macro")[:3],
+            sep=",",
+        )
+        fig, ax = plt.subplots(figsize=(4, 4))
+        sns.heatmap(
+            cf_matrix,
+            annot=True,
+            xticklabels=classes,
+            yticklabels=classes,
+            cbar=False,
+            fmt="d",
+            cmap="Greens",
+            annot_kws={"fontsize": 16},
+            ax=ax,
+        )
+        plt.tight_layout()
         plt.savefig(hm)
+    else:
+        return precision_recall_fscore_support(y_true, y_pred, average="macro")[:3]
 
     print(f"Accuracy of the network on the test images: {100 * correct // total} %")
 
@@ -383,7 +491,7 @@ def predict(
     plot: str,
     zoom: int,
     n_channels: int,
-    resizescale:float,
+    resizescale: float,
     explain: bool = False,
     imgout: str = "",
     mincov: int = 0,
@@ -394,7 +502,7 @@ def predict(
     model.eval()
 
     if explain:
-        #TODO
+        # TODO
         raise NotImplementedError("explain not implemented yet")
     # if explain:
     #     # for CAM, not 100% understood what it does
@@ -413,8 +521,8 @@ def predict(
     #     weight_softmax = np.squeeze(params[-2].cpu().data.numpy())
 
     transform = _build_transformer(plot, n_channels, resizescale)
-    
-    MAXREADS=5_000
+
+    MAXREADS = 5_000
 
     _cls = Event2sample
     if plot in ["squishstack", "squish4d"]:
@@ -430,17 +538,29 @@ def predict(
             line = line.strip()
             region, bam1path, bam2path = line.split(",")
             _parsed_region = parse_region(region)
+            print(_ix, region, sep=",", end=",")
 
-            
             # MAX_REGION_LEN = 70_000
             # print(_parsed_region[2] - _parsed_region[1], file=sys.stderr)
             # if _parsed_region[2] - _parsed_region[1] > MAX_REGION_LEN:
             #     print(f"Region {region} too long ({_parsed_region[2] - _parsed_region[1]} bp). Skipping...", file=sys.stderr)
             #     continue
 
-            event = _cls(_parsed_region, pysam.AlignmentFile(bam1path), pysam.AlignmentFile(bam2path))
-            _p = event.plot(zoom=zoom, type=plot, mode="pil", prefix='', crossfeeds=[[0,0]], mincov=mincov, ensure_JPGE_size=False)
-            assert(len(_p) == 1)
+            event = _cls(
+                _parsed_region,
+                pysam.AlignmentFile(bam1path),
+                pysam.AlignmentFile(bam2path),
+            )
+            _p = event.plot(
+                zoom=zoom,
+                type=plot,
+                mode="pil",
+                prefix="",
+                crossfeeds=[[0, 0]],
+                mincov=mincov,
+                ensure_JPGE_size=False,
+            )
+            assert len(_p) == 1
             img = _p[0]
 
             # if explain:
@@ -471,7 +591,7 @@ def predict(
 
             print(classes[pred.cpu().numpy()[0]], end=",")
             for i in range(len(classes)):
-                if i < len(classes) -1:
+                if i < len(classes) - 1:
                     print(_topk_p[_topk_l.index(i)], end=",")
                 else:
                     print(_topk_p[_topk_l.index(i)])
@@ -560,6 +680,41 @@ def main(args):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
         model.fc = nn.Linear(2048, len(classes))
 
+        if args.crossvalidation:
+            kfold_crossvalidation(
+                model=model,
+                datasets={
+                    "train": load_dataset_only(
+                        args.train,
+                        plot=args.plot,
+                        n_channels=n_channels,
+                        collapse_cse=args.cse,
+                        collapse_a=args.a,
+                        resizescale=args.resizescale,
+                        wd=args.wd,
+                        sample_frac=args.sample_frac,
+                        filter_out=args.no_cf,
+                    ),
+                    "val": load_dataset_only(
+                        args.val,
+                        plot=args.plot,
+                        n_channels=n_channels,
+                        collapse_cse=args.cse,
+                        collapse_a=args.a,
+                        resizescale=args.resizescale,
+                        wd=args.wd,
+                        sample_frac=args.sample_frac,
+                        filter_out=args.no_cf,
+                    ),
+                },
+                criterion=criterion,
+                optimizer=optimizer,
+                classes=classes,
+                num_epochs=args.epochs,
+                is_inception=False,
+            )
+            return
+
         model, _ = train_model(
             model,
             {"train": train_loader, "val": val_loader},
@@ -572,10 +727,7 @@ def main(args):
             torch.save(model.state_dict(), args.net_out)
         validate(val_loader, model, classes, hm=args.hm)
 
-    if args.cmd == "validate":
-        raise NotImplementedError
-
-    if args.cmd == "predict":
+    if args.cmd in ["validate", "predict"]:
         classes = ["A3", "A5", "CE", "NN", "RI", "SE"]
         if args.cse:
             classes.append("CSE")
@@ -589,6 +741,24 @@ def main(args):
         model.fc = nn.Linear(2048, len(classes))
         model.load_state_dict(torch.load(args.net, map_location=device))
 
+    if args.cmd == "validate":
+        val_loader, _valclasses = load_data(
+            args.val,
+            random_split=False,
+            plot=args.plot,
+            n_channels=n_channels,
+            batch_size=32,
+            collapse_cse=args.cse,
+            collapse_a=args.a,
+            resizescale=args.resizescale,
+            wd=args.wd,
+            # num_workers=2,
+            # sample_frac=0.1,
+            # filter_out=args.no_cf,
+        )
+        validate(val_loader, model, classes, hm=args.hm)
+
+    if args.cmd == "predict":
         predict(
             csvpath=args.csv,
             model=model,
@@ -622,6 +792,12 @@ if __name__ == "__main__":
 
     sp_train.add_argument("--epochs", type=int, default=5, help="Training epochs")
     sp_train.add_argument("--batch-size", type=int, default=16, help="Batch size")
+    sp_train.add_argument(
+        "--crossvalidation",
+        default=False,
+        action="store_true",
+        help="Perform cross-validation instead of training on all dataset",
+    )
 
     sp_train.add_argument(
         "--sample-frac",

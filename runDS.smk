@@ -57,6 +57,56 @@ rule benchmark:
             samplefrac = [0.5],
             nocf = ["_", "0.2-0.2"],
             bevent = ["cse", "a3", "a5", "ri"],
+        ),
+        # expand(
+        #     pjoin(BENCHMARKOUT, "mincov{mincov}", "{mode}", "v{version}", "zoom{zoom}", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}", "prediction.{bevent}.csv"),
+        #     mincov=[3],
+        #     version=[1],
+        #     zoom=["COMB"],
+        #     mode=["ensemble"],
+        #     # --- net ---------
+        #     epochs=[10],
+        #     cse=["Y"],
+        #     a=["Y"],
+        #     size = [0.5],
+        #     net = ["rs50"],
+        #     samplefrac = [0.5],
+        #     nocf = ["_"],
+        #     bevent = ["cse", "a3", "a5", "ri"],
+        # ),
+
+rule validate:
+    input:
+        expand(
+            pjoin("paper", "{mincov}", "v{version}", "zoom{zoom}", "{mode}.{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.hm.pdf"),
+            # pjoin("paper", "crossval", "{mincov}", "v{version}", "zoom{zoom}", "{mode}.{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.crossval.csv"),
+            mincov=[3],
+            mode=["pyplot2s","colmplp2s", "squishstack", "squish4d", "comb", "comb4d"],
+            version=[1],
+            zoom=[-1],
+            # --- net ---------
+            epochs=[10],
+            cse=["Y"],
+            a=["Y"],
+            size = [0.5],
+            net = ["rs50"],
+            samplefrac = [0.5],
+            nocf = ["_"],
+        ),
+        expand(
+            pjoin("paper", "crossval", "{mincov}", "v{version}", "zoom{zoom}", "{mode}.{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.crossval.csv"),
+            mincov=[3],
+            mode=["pyplot2s","colmplp2s", "squishstack", "squish4d", "comb", "comb4d"],
+            version=[1],
+            zoom=[-1],
+            # --- net ---------
+            epochs=[10],
+            cse=["Y"],
+            a=["Y"],
+            size = [0.5],
+            net = ["rs50"],
+            samplefrac = [0.5],
+            nocf = ["_"],
         )
 
 rule make_plots:
@@ -120,14 +170,72 @@ rule train_net:
             --wd {params.wd} \
             --hm {output.hm} \
             -o {output.net} \
-            --epochs {wildcards.epochs} \
+            --epochs 20 \
             --batch-size {params.batchsize} \
             --plot {wildcards.mode} \
-            --plotversion {wildcards.version} \
+            --plotversion 1 \
             --sample-frac {wildcards.samplefrac} \
             --no-cf {params.nocf} \
             --resizescale {wildcards.size} {params.cse} {params.a} \
             > {output.log}
+        """
+
+rule validate_net:
+    input: 
+        val=pjoin(PLOTOUT, "mincov{mincov}", "{mode}", "v{version}", "events.val.csv"),
+        net = pjoin(NETOUT, "mincov{mincov}", "{mode}", "v{version}", "train", "zoom{zoom}", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
+    output: 
+        hm=pjoin("paper", "{mincov}", "v{version}", "zoom{zoom}", "{mode}.{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.hm.pdf"),
+        log=pjoin("paper", "{mincov}", "v{version}", "zoom{zoom}", "{mode}.{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pcf.csv"),
+    params:
+        wd=pjoin(PLOTOUT, "mincov{mincov}", "{mode}", "v{version}", "zoom{zoom}"),
+        batchsize=8,
+        cse = lambda wildcards: '--cse' if wildcards.cse == "Y" else '',
+        a = lambda wildcards: '--a' if wildcards.a == "Y" else '',
+        nocf = lambda wildcards: "_" if wildcards.nocf == "_" else wildcards.nocf,
+    resources:
+        gpu=1
+    shell: 
+        """
+            python {DS} validate \
+            -n {input.net} \
+            --val {input.val} \
+            --wd {params.wd} \
+            --hm {output.hm} \
+            --plot {wildcards.mode} \
+            --plotversion 1 \
+            --resizescale {wildcards.size} {params.cse} {params.a} > {output.log}
+        """
+
+rule crossvalidate_net:
+    input: 
+        train=pjoin(PLOTOUT, "mincov{mincov}", "{mode}", "v{version}", "events.train.csv"),
+        val=pjoin(PLOTOUT, "mincov{mincov}", "{mode}", "v{version}", "events.val.csv")
+    output: 
+        csv=pjoin("paper", "crossval", "{mincov}", "v{version}", "zoom{zoom}", "{mode}.{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.crossval.csv"),
+    params:
+        wd=pjoin(PLOTOUT, "mincov{mincov}", "{mode}", "v{version}", "zoom{zoom}"),
+        batchsize=8,
+        cse = lambda wildcards: '--cse' if wildcards.cse == "Y" else '',
+        a = lambda wildcards: '--a' if wildcards.a == "Y" else '',
+        nocf = lambda wildcards: "_" if wildcards.nocf == "_" else wildcards.nocf,
+    resources:
+        gpu=1
+    shell: 
+        """
+            python {DS} train \
+            --train {input.train} \
+            --val {input.val} \
+            --wd {params.wd} \
+            --epochs 20 \
+            --batch-size {params.batchsize} \
+            --plot {wildcards.mode} \
+            --plotversion 1 \
+            --sample-frac {wildcards.samplefrac} \
+            --no-cf {params.nocf} \
+            --crossvalidation \
+            --resizescale {wildcards.size} {params.cse} {params.a} \
+            > {output.csv}
         """
 
 rule predict_benchmark:
@@ -162,7 +270,7 @@ rule ensemble_benchmark:
         net_comb = pjoin(NETOUT, "mincov{mincov}", "comb", "v{version}", "train", "zoom{zoom}", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
         net_comb4d = pjoin(NETOUT, "mincov{mincov}", "comb4d", "v{version}", "train", "zoom{zoom}", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
     output:
-        out = pjoin(BENCHMARKOUT, "mincov{mincov}", "ensemble", "v{version}", "zoom{zoom}", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}", "prediction.{bevent}.csv"),
+        out = pjoin(BENCHMARKOUT, "mincov{mincov}", "ensemble", "v{version}", "zoom{zoom,-1|20}", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}", "prediction.{bevent}.csv"),
     params:
         cse = lambda wildcards: "--cse" if wildcards.cse == "Y" else '',
         a = lambda wildcards: "--a" if wildcards.a == "Y" else '',
@@ -180,5 +288,35 @@ rule ensemble_benchmark:
         --zoom {wildcards.zoom} \
         {params.cse} {params.a} \
         > {output.out}
-        
         """
+
+# rule ensemble_benchmark_zoomCOMB:
+#     input:
+#         csv = pjoin(BENCHMARKCSV, "events.{bevent}.csv"),
+#         net_pyplot2s = pjoin(NETOUT, "mincov{mincov}", "pyplot2s", "v{version}", "train", "zoom-1", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
+#         net_colmplp2s = pjoin(NETOUT, "mincov{mincov}", "colmplp2s", "v{version}", "train", "zoom-1", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
+#         net_squishstack = pjoin(NETOUT, "mincov{mincov}", "squishstack", "v{version}", "train", "zoom-1", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
+#         net_squish4d = pjoin(NETOUT, "mincov{mincov}", "squish4d", "v{version}", "train", "zoom-1", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
+#         net_comb = pjoin(NETOUT, "mincov{mincov}", "comb", "v{version}", "train", "zoom-1", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
+#         net_comb4d = pjoin(NETOUT, "mincov{mincov}", "comb4d", "v{version}", "train", "zoom-1", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}.pth"),
+
+#     output:
+#         out = pjoin(BENCHMARKOUT, "mincov{mincov}", "ensemble", "v{version}", "zoomCOMB", "{net}.cse{cse}.a{a}.e{epochs}.resize{size}.nocf{nocf}.sf{samplefrac}", "prediction.{bevent}.csv"),
+#     params:
+#         cse = lambda wildcards: "--cse" if wildcards.cse == "Y" else '',
+#         a = lambda wildcards: "--a" if wildcards.a == "Y" else '',
+#     resources:
+#         gpu=1
+#     shell:
+#         """
+#         python {DSESM} --csv {input.csv} \
+#         --pyplot2s $(echo {input.net_pyplot2s} | sed 's/zoom-1/zoom{{Z}}/g') \
+#         --colmplp2s {input.net_colmplp2s} \
+#         --squishstack {input.net_squishstack} \
+#         --squish4d {input.net_squish4d} \
+#         --comb {input.net_comb} \
+#         --comb4d {input.net_comb4d} \
+#         --zoom -1 20 \
+#         {params.cse} {params.a} \
+#         > {output.out}
+#         """
