@@ -20,7 +20,9 @@ We thus provide the lists of manually curated events in the files:
 - [Alternative donor](A5.txt) 30 events
 - [Intron retention](IR.txt) 17 events
 
-Lastly we provide the bam files of the aligned reads from `PRJNA255099`, in which only the reads overlapping the regions of interest are retained,
+We provide the bam files of the aligned reads from `PRJNA255099`, in which only the reads overlapping the regions of interest are retained,
 divided in two conditions:
 - [Condition 1](c1.bam) comprised of samples `SRR1513329`, `SRR1513330`, `SRR1513331`
 - [Condition 2](c2.bam) comprised of samples `SRR1513332`, `SRR1513333`, `SRR1513334`
+
+Lastly in `igv_images/[ES|A3|A5|IR]` we provide the `igv` screenshot of the curated images.
